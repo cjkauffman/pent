@@ -19,22 +19,31 @@ static PyObject *ModuloMatrix_new(PyTypeObject *type, PyObject *args, PyObject *
 static int ModuloMatrix_init(PyObject *op, PyObject *args, PyObject *kwds) {
     ModuloMatrix *self = (ModuloMatrix *) op;
     PyObject *basearray = NULL;
-    if (!PyArg_ParseTuple(args, "OI", &basearray, &self->modulo_value)) {return -1;}
-    if (!PyList_Check(basearray)) {return -2;}
+    if (!PyArg_ParseTuple(args, "OI", &basearray, &self->modulo_value)) {
+        PyErr_SetString(PyExc_TypeError, "argument should be a matrix followed by a nonnegative integer");
+        return -1;
+    }
+    if (!PyList_Check(basearray)) {
+        PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists.");
+        return -2;
+    }
     self->matrix_height = PyList_Size(basearray);
     if(self->matrix_height>0) {
         if(!PyList_Check(PyList_GetItem(basearray, 0))) {
-            return -3;
+            PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists.");
+            return -2;
         } else {
             self->matrix_width = PyList_Size(PyList_GetItem(basearray, 0));
         }
         for (int i = 1; i < self->matrix_height; i++) {
             PyObject* row = PyList_GetItem(basearray, i);
             if(!PyList_Check(row)) {
-                return -3;
+                PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists.");
+                return -2;
             }
             if (PyList_Size(row) != self->matrix_width) {
-                return -4;
+                PyErr_SetString(PyExc_TypeError, "all rows must be the same size.");
+                return -3;
             }
         }
         self->matrix_values = malloc(sizeof(uint32_t)*self->matrix_width*self->matrix_height);
@@ -45,19 +54,20 @@ static int ModuloMatrix_init(PyObject *op, PyObject *args, PyObject *kwds) {
                 PyObject* pyvalue = PyList_GetItem(row, j);
                 if (!PyLong_Check(pyvalue)) {
                     free(self->matrix_values);
-                    return -5;
+                    PyErr_SetString(PyExc_TypeError, "all elements must be integers.");
+                    return -3;
                 }
                 int64_t *signedvalue;
-                if(PyLong_AsUInt64(pyvalue, signedvalue)) {
+                if(PyLong_AsInt64(pyvalue, signedvalue)) {
                     free(self->matrix_values);
-                    return -6;
+                    PyErr_SetString(PyExc_TypeError, "all matrix elements must be 64-bit integers.");
+                    return -4;
                 }
                 *signedvalue %= self->modulo_value;
                 if(*signedvalue < 0) {*signedvalue += self->modulo_value;}
                 uint32_t matrix_value = *signedvalue & 0xFFFFFFFF;
                 self->matrix_values[i*self->matrix_width + j] = matrix_value;
             }
-
         }
     }
     return 0;
@@ -89,7 +99,7 @@ static PyMethodDef ModuloMatrix_methods[] = {
     {NULL}
 };
 
-static PyTypeObject PyModMatrix = {
+static PyTypeObject pentModMatrix = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "pent.ModuloMatrix",
     .tp_doc = PyDoc_STR("Modulo Matrix"),
@@ -104,11 +114,21 @@ static PyTypeObject PyModMatrix = {
 
 static PyObject* ModuloMatrix_product(PyObject* self, PyObject* args){
     PyObject *A, *B;
-    if (!PyArg_ParseTuple(args, "OO", &A, &B)) {return NULL;}
+    if (!PyArg_ParseTuple(args, "OO", &A, &B)) {
+        PyErr_SetString(PyExc_TypeError, "arguments must be modulo matrices");
+        return NULL;
+    }
     ModuloMatrix *a = (ModuloMatrix *)A;
     ModuloMatrix *b = (ModuloMatrix *)B;
-    if(a->matrix_width != b->matrix_height || a->modulo_value != b->modulo_value) {return NULL;}
-    ModuloMatrix* product = (ModuloMatrix *)ModuloMatrix_new(&PyModMatrix, NULL, NULL);
+    if(a->matrix_width != b->matrix_height) {
+        PyErr_SetString(PyExc_TypeError, "the number of columns in the first matrix must be equal to the number of rows in the second matrix");
+        return NULL;
+    }
+    if(a->modulo_value != b->modulo_value) {
+        PyErr_SetString(PyExc_TypeError, "modulo values must be the same");
+        return NULL;
+    }
+    ModuloMatrix* product = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
     product->matrix_height = a->matrix_height;
     product->matrix_width = b->matrix_width;
     product->modulo_value = a->modulo_value;
@@ -131,10 +151,16 @@ static PyObject* ModuloMatrix_product(PyObject* self, PyObject* args){
 static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
     PyObject *A;
     unsigned long long *power;
-    if (!PyArg_ParseTuple(args, "OK", &A, power)) {return NULL;}
+    if (!PyArg_ParseTuple(args, "OK", &A, power)) {
+        PyErr_SetString(PyExc_TypeError, "arguments must be a ModuloMatrix followed by an unsigned integer");
+        return NULL;
+    }
     ModuloMatrix *a = (ModuloMatrix *)A;
-    if(a->matrix_width != a->matrix_height){return NULL;}
-    ModuloMatrix* runningproduct = (ModuloMatrix *)ModuloMatrix_new(&PyModMatrix, NULL, NULL);
+    if(a->matrix_width != a->matrix_height){
+        PyErr_SetString(PyExc_TypeError, "matrix must be square");
+        return NULL;
+    }
+    ModuloMatrix* runningproduct = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
     runningproduct->matrix_height = runningproduct->matrix_width = a->matrix_width;
     runningproduct->modulo_value = a->modulo_value;
     runningproduct->matrix_values = malloc(a->matrix_height * a->matrix_width * sizeof(uint32_t));
@@ -142,7 +168,7 @@ static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
         if(i % (a->matrix_height + 1)){runningproduct->matrix_values[i] = 0;} else {runningproduct->matrix_values[i] = 1;}
     }
     printf("Check 1, power = %llu\n", *power);
-    ModuloMatrix* binarypower = (ModuloMatrix *)ModuloMatrix_new(&PyModMatrix, NULL, NULL);
+    ModuloMatrix* binarypower = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
     binarypower->matrix_height = binarypower->matrix_width = a->matrix_height;
     binarypower->modulo_value = a->modulo_value;
     binarypower->matrix_values = malloc(a->matrix_height * a->matrix_width * sizeof(uint32_t));
@@ -151,19 +177,14 @@ static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
     }
     printf("Check 2, power = %llu\n", *power);
     for(unsigned long long powermask = 1;powermask;powermask *= 2){
-        printf("Check 3\n");
         if (powermask & *power) {
-            printf("Check 4\n");
             PyObject* rpargs = PyTuple_New(2);
-            printf("Check 5\n");
             PyTuple_SetItem(rpargs, 0, (PyObject * )runningproduct);
-            printf("Check 6\n");
             PyTuple_SetItem(rpargs, 1, (PyObject * )binarypower);
-            printf("Check 7\n");
             ModuloMatrix* newrunningproduct = (ModuloMatrix *)ModuloMatrix_product(self, rpargs);
             runningproduct = newrunningproduct;
         }
-        printf("Check 8\n");
+        printf;
         PyObject* bpargs = PyTuple_New(2);
         PyTuple_SetItem(bpargs, 0, (PyObject * )binarypower);
         PyTuple_SetItem(bpargs, 1, (PyObject * )binarypower);
@@ -180,8 +201,8 @@ static PyMethodDef pent_methods[] = {
 };
 
 static int pent_module_exec(PyObject *m) {
-    if(PyType_Ready(&PyModMatrix) < 0) {return -1;}
-    if (PyModule_AddObjectRef(m, "ModuloMatrix", (PyObject*) &PyModMatrix) < 0) {return -1;}
+    if(PyType_Ready(&pentModMatrix) < 0) {return -1;}
+    if (PyModule_AddObjectRef(m, "ModuloMatrix", (PyObject*) &pentModMatrix) < 0) {return -1;}
     return 0;
 }
 
