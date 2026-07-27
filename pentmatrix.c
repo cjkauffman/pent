@@ -167,7 +167,6 @@ static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
     for(uint32_t i = 0; i < a->matrix_height*a->matrix_width; i++) {
         if(i % (a->matrix_height + 1)){runningproduct->matrix_values[i] = 0;} else {runningproduct->matrix_values[i] = 1;}
     }
-    printf("Check 1, power = %llu\n", *power);
     ModuloMatrix* binarypower = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
     binarypower->matrix_height = binarypower->matrix_width = a->matrix_height;
     binarypower->modulo_value = a->modulo_value;
@@ -175,7 +174,6 @@ static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
     for(uint32_t i = 0; i < a->matrix_height*a->matrix_width; i++) {
         binarypower->matrix_values[i] = a->matrix_values[i];
     }
-    printf("Check 2, power = %llu\n", *power);
     for(unsigned long long powermask = 1;powermask;powermask *= 2){
         if (powermask & *power) {
             PyObject* rpargs = PyTuple_New(2);
@@ -184,7 +182,6 @@ static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
             ModuloMatrix* newrunningproduct = (ModuloMatrix *)ModuloMatrix_product(self, rpargs);
             runningproduct = newrunningproduct;
         }
-        printf;
         PyObject* bpargs = PyTuple_New(2);
         PyTuple_SetItem(bpargs, 0, (PyObject * )binarypower);
         PyTuple_SetItem(bpargs, 1, (PyObject * )binarypower);
