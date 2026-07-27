@@ -24,48 +24,46 @@ static int ModuloMatrix_init(PyObject *op, PyObject *args, PyObject *kwds) {
         return -1;
     }
     if (!PyList_Check(basearray)) {
-        PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists.");
+        PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists");
         return -2;
     }
     self->matrix_height = PyList_Size(basearray);
     if(self->matrix_height>0) {
         if(!PyList_Check(PyList_GetItem(basearray, 0))) {
-            PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists.");
+            PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists");
             return -2;
         } else {
             self->matrix_width = PyList_Size(PyList_GetItem(basearray, 0));
         }
         for (int i = 1; i < self->matrix_height; i++) {
-            PyObject* row = PyList_GetItem(basearray, i);
+            PyObject* row = Py_NewRef(PyList_GetItem(basearray, i));
             if(!PyList_Check(row)) {
-                PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists.");
+                PyErr_SetString(PyExc_TypeError, "matrix elements should be written as a list of lists");
                 return -2;
             }
             if (PyList_Size(row) != self->matrix_width) {
-                PyErr_SetString(PyExc_TypeError, "all rows must be the same size.");
+                PyErr_SetString(PyExc_TypeError, "all rows must be the same size");
                 return -3;
             }
         }
         self->matrix_values = malloc(sizeof(uint32_t)*self->matrix_width*self->matrix_height);
-        if (!self->matrix_values){return -5;}
+        if (!self->matrix_values){
+            PyErr_SetString(PyExc_MemoryError, "unable to allocate memory");
+            return -5;
+        }
         for (int i = 0; i < self->matrix_height; i++) {
             PyObject* row = PyList_GetItem(basearray, i);
             for (int j = 0; j < self->matrix_width; j++) {
                 PyObject* pyvalue = PyList_GetItem(row, j);
                 if (!PyLong_Check(pyvalue)) {
                     free(self->matrix_values);
-                    PyErr_SetString(PyExc_TypeError, "all elements must be integers.");
+                    PyErr_SetString(PyExc_TypeError, "all elements must be integers");
                     return -3;
                 }
-                int64_t *signedvalue;
-                if(PyLong_AsInt64(pyvalue, signedvalue)) {
-                    free(self->matrix_values);
-                    PyErr_SetString(PyExc_TypeError, "all matrix elements must be 64-bit integers.");
-                    return -4;
-                }
-                *signedvalue %= self->modulo_value;
-                if(*signedvalue < 0) {*signedvalue += self->modulo_value;}
-                uint32_t matrix_value = *signedvalue & 0xFFFFFFFF;
+                long long signedvalue = PyLong_AsLongLong(pyvalue);
+                signedvalue %= self->modulo_value;
+                if(signedvalue < 0) {signedvalue += self->modulo_value;}
+                uint32_t matrix_value = signedvalue & 0xFFFFFFFF;
                 self->matrix_values[i*self->matrix_width + j] = matrix_value;
             }
         }
@@ -75,7 +73,7 @@ static int ModuloMatrix_init(PyObject *op, PyObject *args, PyObject *kwds) {
 
 static void ModuloMatrix_dealloc(PyObject *op) {
     ModuloMatrix *self = (ModuloMatrix *)op;
-    free(self->matrix_values);
+    if(self->matrix_values){free(self->matrix_values);}
     Py_TYPE(self)->tp_free(self);
 }
 
@@ -112,14 +110,67 @@ static PyTypeObject pentModMatrix = {
     .tp_methods = ModuloMatrix_methods
 };
 
+/*
+ *  Multiplication without error checking. This will mainly be of use in our matrix exponentiation function,
+ *  and other cases where we want to repeatedly multiply matrices without creating a new Python object each time.
+*/
+
+static _MMSimple* simpleproduct(_MMSimple* a, _MMSimple* b) {
+    _MMSimple* sproduct = malloc(sizeof(_MMSimple));
+    sproduct-> matrix_height = a->matrix_height;
+    sproduct->matrix_width = b->matrix_width;
+    sproduct->modulo_value = a->modulo_value;
+    sproduct->matrix_values = malloc(a->matrix_height * b->matrix_width * sizeof(uint32_t));
+    for(uint16_t i = 0; i < sproduct->matrix_height; i++) {
+        for (uint16_t j = 0; j < sproduct->matrix_width; j++) {
+            uint64_t running_sum = 0;
+            for(int k = 0; k < a->matrix_width; k++) {
+                running_sum += (uint64_t)(a->matrix_values[i*a->matrix_width + k]) * (uint64_t)(b->matrix_values[k*b->matrix_width + j]);
+                running_sum %= sproduct->modulo_value;
+            }
+            sproduct->matrix_values[i*sproduct->matrix_width + j] = (uint32_t)(running_sum & 0xFFFFFFFF);
+        }
+    }
+    return sproduct;
+}
+
+/*
+ * A function to convert our simplified matrices to their corresponding python objects.
+ * Note that this doesn´t free the original struct pointer.
+*/
+
+static PyObject* SimpleMM_toMM(_MMSimple* mat) {
+    ModuloMatrix* newmm = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
+    newmm->matrix_height = mat->matrix_height;
+    newmm->matrix_width = mat->matrix_width;
+    newmm->modulo_value = mat->modulo_value;
+    newmm->matrix_values = malloc(newmm->matrix_height*newmm->matrix_width*sizeof(uint32_t));
+    for(int i = 0; i < newmm->matrix_height*newmm->matrix_width; i++) {
+        newmm->matrix_values[i] = mat->matrix_values[i];
+    }
+    return (PyObject *)newmm;
+}
+
+static _MMSimple* MM_toSimpleMM(PyObject* pymat) {
+    _MMSimple* newsmm = malloc(sizeof(_MMSimple));
+    newsmm->matrix_height = ((ModuloMatrix *)pymat)->matrix_height;
+    newsmm->matrix_width = ((ModuloMatrix *)pymat)->matrix_width;
+    newsmm->modulo_value = ((ModuloMatrix *)pymat)->modulo_value;
+    newsmm->matrix_values = malloc(newsmm->matrix_height*newsmm->matrix_width*sizeof(uint32_t));
+    for(int i = 0; i < newsmm->matrix_height*newsmm->matrix_width; i++) {
+        newsmm->matrix_values[i] = ((ModuloMatrix *)pymat)->matrix_values[i];
+    }
+    return newsmm;
+}
+
 static PyObject* ModuloMatrix_product(PyObject* self, PyObject* args){
     PyObject *A, *B;
     if (!PyArg_ParseTuple(args, "OO", &A, &B)) {
         PyErr_SetString(PyExc_TypeError, "arguments must be modulo matrices");
         return NULL;
     }
-    ModuloMatrix *a = (ModuloMatrix *)A;
-    ModuloMatrix *b = (ModuloMatrix *)B;
+    _MMSimple* a = MM_toSimpleMM(A);
+    _MMSimple* b = MM_toSimpleMM(B);
     if(a->matrix_width != b->matrix_height) {
         PyErr_SetString(PyExc_TypeError, "the number of columns in the first matrix must be equal to the number of rows in the second matrix");
         return NULL;
@@ -128,72 +179,64 @@ static PyObject* ModuloMatrix_product(PyObject* self, PyObject* args){
         PyErr_SetString(PyExc_TypeError, "modulo values must be the same");
         return NULL;
     }
-    ModuloMatrix* product = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
-    product->matrix_height = a->matrix_height;
-    product->matrix_width = b->matrix_width;
-    product->modulo_value = a->modulo_value;
-    product->matrix_values = malloc(a->matrix_height * b->matrix_width * sizeof(uint32_t));
-    for(uint16_t i = 0; i < product->matrix_height; i++) {
-        for (uint16_t j = 0; j < product->matrix_width; j++) {
-            uint64_t running_sum = 0;
-            for(int k = 0; k < a->matrix_width; k++) {
-                running_sum += (uint64_t)(a->matrix_values[i*a->matrix_width + k]) * (uint64_t)(b->matrix_values[k*b->matrix_width + j]);
-                running_sum %= product->modulo_value;
-            }
-            product->matrix_values[i*product->matrix_width + j] = (uint32_t)(running_sum & 0xFFFFFFFF);
-        }
-    }
-    return (PyObject *)product;
+    _MMSimple* matprod = simpleproduct(a,b);
+    PyObject* prod = SimpleMM_toMM(matprod);
+    free(matprod->matrix_values);
+    free(matprod);
+    return prod;
 }
 
 
 
 static PyObject* ModuloMatrix_power(PyObject* self, PyObject* args){
     PyObject *A;
-    unsigned long long *power;
-    if (!PyArg_ParseTuple(args, "OK", &A, power)) {
+    unsigned long long power;
+    if (!PyArg_ParseTuple(args, "OK", &A, &power)) {
         PyErr_SetString(PyExc_TypeError, "arguments must be a ModuloMatrix followed by an unsigned integer");
         return NULL;
     }
-    ModuloMatrix *a = (ModuloMatrix *)A;
+    _MMSimple *a = MM_toSimpleMM(A);
     if(a->matrix_width != a->matrix_height){
         PyErr_SetString(PyExc_TypeError, "matrix must be square");
         return NULL;
     }
-    ModuloMatrix* runningproduct = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
+    _MMSimple *runningproduct = malloc(sizeof(_MMSimple));
     runningproduct->matrix_height = runningproduct->matrix_width = a->matrix_width;
     runningproduct->modulo_value = a->modulo_value;
     runningproduct->matrix_values = malloc(a->matrix_height * a->matrix_width * sizeof(uint32_t));
     for(uint32_t i = 0; i < a->matrix_height*a->matrix_width; i++) {
         if(i % (a->matrix_height + 1)){runningproduct->matrix_values[i] = 0;} else {runningproduct->matrix_values[i] = 1;}
     }
-    ModuloMatrix* binarypower = (ModuloMatrix *)ModuloMatrix_new(&pentModMatrix, NULL, NULL);
-    binarypower->matrix_height = binarypower->matrix_width = a->matrix_height;
+    _MMSimple *binarypower = malloc(sizeof(_MMSimple));
+    binarypower->matrix_height = binarypower->matrix_width = a->matrix_width;
     binarypower->modulo_value = a->modulo_value;
     binarypower->matrix_values = malloc(a->matrix_height * a->matrix_width * sizeof(uint32_t));
     for(uint32_t i = 0; i < a->matrix_height*a->matrix_width; i++) {
         binarypower->matrix_values[i] = a->matrix_values[i];
     }
-    for(unsigned long long powermask = 1;powermask;powermask *= 2){
-        if (powermask & *power) {
-            PyObject* rpargs = PyTuple_New(2);
-            PyTuple_SetItem(rpargs, 0, (PyObject * )runningproduct);
-            PyTuple_SetItem(rpargs, 1, (PyObject * )binarypower);
-            ModuloMatrix* newrunningproduct = (ModuloMatrix *)ModuloMatrix_product(self, rpargs);
+    for(unsigned long long powermask = 1;powermask;powermask <<= 1){
+        if (powermask & power) {
+            _MMSimple *newrunningproduct = simpleproduct(runningproduct, binarypower);
+            free(runningproduct->matrix_values);
+            free(runningproduct);
             runningproduct = newrunningproduct;
         }
-        PyObject* bpargs = PyTuple_New(2);
-        PyTuple_SetItem(bpargs, 0, (PyObject * )binarypower);
-        PyTuple_SetItem(bpargs, 1, (PyObject * )binarypower);
-        ModuloMatrix* newbinarypower = (ModuloMatrix *)ModuloMatrix_product(self, bpargs);
+        _MMSimple *newbinarypower = simpleproduct(binarypower, binarypower);
+        free(binarypower->matrix_values);
+        free(binarypower);
         binarypower = newbinarypower;
     }
-    return (PyObject *)runningproduct;
+    PyObject *matpower = SimpleMM_toMM(runningproduct);
+    free(runningproduct->matrix_values);
+    free(runningproduct);
+    free(binarypower->matrix_values);
+    free(binarypower);
+    return matpower;
 }
 
 static PyMethodDef pent_methods[] = {
-    {"product", ModuloMatrix_product, METH_VARARGS, "Returns the product of two matrices."},
-    {"power", ModuloMatrix_power, METH_VARARGS, "Returns a matrix to the power of a nonnegative integer."},
+    {"product", ModuloMatrix_product, METH_VARARGS, "Returns the product of two matrices, modulo a positive integer."},
+    {"power", ModuloMatrix_power, METH_VARARGS, "Returns a matrix to the power of a nonnegative integer, modulo a positive integer."},
     {NULL}
 };
 
@@ -218,13 +261,4 @@ static PyModuleDef pent_module = {
 };
 PyMODINIT_FUNC PyInit_pent(void) {
     return PyModuleDef_Init(&pent_module);
-}
-
-void printmatrix(ModuloMatrix* a) {
-    for(int i = 0; i < a->matrix_height; i++) {
-        for(int j = 0; j < a->matrix_width; j++) {
-            printf("%"PRIu32" ", a->matrix_values[i*a->matrix_width + j]);
-        }
-        printf("\n");
-    }
 }
